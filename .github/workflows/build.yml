@@ -111,11 +111,11 @@ jobs:
       - name: Build steamworks addon (aarch64)
         run: |
           tar -xzf addon/src.tar.gz -C addon
-          tar -xzf addon/steam-sdk-linuxarm64.tar.gz -C addon
-          mkdir -p addon/steam-sdk && mv addon/redistributable_bin addon/steam-sdk/
           cd addon
-          export STEAM_SDK_LOCATION="$PWD/steam-sdk"
           cargo build --locked --release
+          steam_api=$(find target/release/build/steamworks-sys-*/out -type f -name libsteam_api.so -print -quit)
+          test -n "$steam_api"
+          cp "$steam_api" ../steam-api.so
           cp target/release/libsteamworksjs.so ../addon-out.so
 
       - uses: actions/setup-node@v4
@@ -140,8 +140,7 @@ jobs:
           node scripts/app.mjs build
           mkdir -p node_modules/steamworks.js/dist/linux64
           cp ../addon-out.so node_modules/steamworks.js/dist/linux64/steamworksjs.linux-arm64-gnu.node
-          tar -xzf ../addon/steam-sdk-linuxarm64.tar.gz -C /tmp
-          cp /tmp/redistributable_bin/linuxarm64/libsteam_api.so node_modules/steamworks.js/dist/linux64/libsteam_api.so
+          cp ../steam-api.so node_modules/steamworks.js/dist/linux64/libsteam_api.so
           tar -xzf ../gui/steamworks-js-overlay.tar.gz -C node_modules/steamworks.js
           # electron dist (official arm64 zip)
           curl -fsSL https://github.com/electron/electron/releases/download/v39.7.0/electron-v39.7.0-linux-arm64.zip -o /tmp/electron.zip
