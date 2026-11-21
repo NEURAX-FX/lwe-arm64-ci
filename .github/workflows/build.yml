@@ -82,7 +82,7 @@ jobs:
         run: |
           d=engine/engine-install/usr/lib64/linux-wallpaperengine
           find "$d" -type f | while read -r f; do
-            [[ $(head -c4 "$f" | xxd -p) == 7f454c46* ]] && aarch64-linux-gnu-strip --strip-debug "$f" || true
+            [[ $(head -c4 "$f" | od -An -tx1 | tr -d ' \n') == 7f454c46* ]] && aarch64-linux-gnu-strip --strip-debug "$f" || true
           done
           rm -rf "$d"/include "$d"/lib "$d"/share "$d"/bin "$d"/qjs "$d"/qjsc
           chmod 4755 "$d/chrome-sandbox"
