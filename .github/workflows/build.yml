@@ -61,7 +61,7 @@ jobs:
         run: |
           # Ubuntu's cross-gcc (13) can't parse Fedora 45's libstdc++ 16 headers;
           # run the build inside fedora:45, which ships the matching cross-gcc 16.
-          docker run --rm -v "$PWD":/w -w /w/engine fedora:45 bash -c '
+          docker run --rm -v "$GITHUB_WORKSPACE":/w -w /w/engine fedora:45 bash -c '
             dnf -y install --setopt=install_weak_deps=False \
               gcc-aarch64-linux-gnu cmake ninja-build git bzip2 >/dev/null
             git clone -q https://github.com/Almamu/linux-wallpaperengine.git lwe
