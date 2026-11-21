@@ -70,7 +70,8 @@ jobs:
               -DCMAKE_BUILD_TYPE=Release \
               -DCMAKE_INSTALL_PREFIX=/usr/lib64/linux-wallpaperengine \
               -DSPIRV_CROSS_SKIP_INSTALL=ON \
-              -DBUILD_TESTING=OFF -DKISSFFT_STATIC=ON
+              -DBUILD_TESTING=OFF -DKISSFFT_STATIC=ON \
+              -DKISSFFT_TEST=OFF -DKISSFFT_TOOLS=OFF
             cmake --build build --parallel 4 --target linux-wallpaperengine qjs_exe qjsc
             DESTDIR=/w/engine/engine-install cmake --install build
             cd /w/engine/engine-install/usr/lib64/linux-wallpaperengine
