@@ -43,6 +43,7 @@ jobs:
           sudo chown -R $USER:$USER f45-cross rpms 2>/dev/null || true
 
       - name: Restore CEF archive
+        id: cache-cef
         uses: actions/cache@v4
         with:
           path: cef.tar.bz2
@@ -83,7 +84,7 @@ jobs:
           done
           rm -rf "$d"/include "$d"/lib "$d"/share "$d"/bin "$d"/qjs "$d"/qjsc
           chmod 4755 "$d/chrome-sandbox"
-          ( cd "$d" && zip -q -r -9 ../../../../engine.zip . )
+          ( cd "$d" && zip -q -r -9 "$GITHUB_WORKSPACE/engine.zip" . )
           # rpm via fpm
           sudo apt-get install -y --no-install-recommends ruby
           sudo gem install fpm --no-document
@@ -125,6 +126,7 @@ jobs:
 
       - name: Build UI (electron-builder)
         run: |
+          sudo apt-get install -y --no-install-recommends rpm
           curl -fsSL https://bun.sh/install | bash -s v1.1.34
           export PATH="$HOME/.bun/bin:$PATH"
           # node 22 for packing the addon
@@ -153,7 +155,7 @@ jobs:
       - name: Collect artifacts
         run: |
           mkdir -p dist
-          cp engine-linux-wallpaperengine-0.20260609-1.gita0ddce5.fc45.aarch64.rpm dist/ 2>/dev/null || true
+          mv engine-linux-wallpaperengine-0.20260609-1.gita0ddce5.fc45.aarch64.rpm dist/linux-wallpaperengine-0.20260609-1.gita0ddce5.fc45.aarch64.rpm
           cp engine.zip dist/linux-wallpaperengine-0.20260609-aarch64.zip
           cp linux-wallpaper-engine-0.4.15/release-arm64/linux-wallpaper-engine-0.4.15-aarch64.rpm dist/
           cp linux-wallpaper-engine-0.4.15/release-arm64/linux-wallpaper-engine-0.4.15-arm64.zip dist/
