@@ -139,6 +139,7 @@ jobs:
           bun install --frozen-lockfile
           node scripts/app.mjs build
           mkdir -p node_modules/steamworks.js/dist/linux64
+          rm -f node_modules/steamworks.js/dist/linux64/*.node
           cp ../addon-out.so node_modules/steamworks.js/dist/linux64/steamworksjs.linux-arm64-gnu.node
           cp ../steam-api.so node_modules/steamworks.js/dist/linux64/libsteam_api.so
           tar -xzf ../gui/steamworks-js-overlay.tar.gz -C node_modules/steamworks.js
