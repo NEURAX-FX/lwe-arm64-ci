@@ -1,0 +1,162 @@
+name: build-aarch64
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af || true
+          df -h /
+
+      - name: Cache sysroot
+        uses: actions/cache@v4
+        with:
+          path: f45-cross
+          key: f45-cross-v1
+
+      - name: Set up cross toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            rpm2cpio cpio rpm zstd zip bzip2
+
+      - name: Fedora 45 aarch64 sysroot
+        working-directory: engine
+        run: bash setup-sysroot.sh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Restore CEF archive
+        uses: actions/cache@v4
+        with:
+          path: cef.tar.bz2
+          key: cef-135-linuxarm64-v1
+
+      - name: Download CEF (linuxarm64 minimal)
+        if: steps.cache-cef.outputs.cache-hit != 'true'
+        run: |
+          url='https://cef-builds.spotifycdn.com/cef_binary_135.0.17%2Bgcbc1c5b%2Bchromium-135.0.7049.52_linuxarm64_minimal.tar.bz2'
+          curl -fL --retry 5 --retry-delay 3 --retry-all-errors -o cef.tar.bz2 "$url"
+          echo '3bcb0e3994b4f2db168c314468eb7cc2f3ea0d64  cef.tar.bz2' | sha1sum -c -
+
+      - name: Build engine
+        working-directory: engine
+        run: |
+          # upstream commit a0ddce5, applied verbatim
+          curl -fsSL https://github.com/Almamu/linux-wallpaperengine/archive/a0ddce586e9ff12e9d31ca6b103f6036cc1b68fe.tar.gz -o src.tar.gz
+          tar -xzf src.tar.gz
+          cd linux-wallpaperengine-*
+          # CEF: place archive where DownloadCEF expects it (skips network fetch)
+          mkdir -p build/cef
+          cp ../../cef.tar.bz2 "build/cef/cef_binary_135.0.17+gcbc1c5b+chromium-135.0.7049.52_linuxarm64_minimal.tar.bz2"
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr/lib64/linux-wallpaperengine \
+            -DCMAKE_TOOLCHAIN_FILE=../../toolchain.cmake \
+            -DCMAKE_EXE_LINKER_FLAGS="-lgcc_s" \
+            -DSPIRV_CROSS_SKIP_INSTALL=ON \
+            -DBUILD_TESTING=OFF -DKISSFFT_STATIC=ON
+          ninja -C build linux-wallpaperengine qjs_exe qjsc
+          DESTDIR=../engine-install cmake --install build
+
+      - name: Strip and package engine
+        run: |
+          d=engine/engine-install/usr/lib64/linux-wallpaperengine
+          find "$d" -type f | while read -r f; do
+            [[ $(head -c4 "$f" | xxd -p) == 7f454c46* ]] && aarch64-linux-gnu-strip --strip-debug "$f" || true
+          done
+          rm -rf "$d"/include "$d"/lib "$d"/share "$d"/bin "$d"/qjs "$d"/qjsc
+          chmod 4755 "$d/chrome-sandbox"
+          ( cd "$d" && zip -q -r -9 ../../../../engine.zip . )
+          # rpm via fpm
+          sudo apt-get install -y --no-install-recommends ruby
+          sudo gem install fpm --no-document
+          stage=engine/stage; mkdir -p "$stage/usr/lib64" "$stage/usr/bin"
+          cp -a "$d" "$stage/usr/lib64/linux-wallpaperengine"
+          printf '%s\n' \
+            '#!/bin/bash' \
+            'cd /usr/lib64/linux-wallpaperengine || exit 1' \
+            'export LD_LIBRARY_PATH="/usr/lib64/linux-wallpaperengine${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"' \
+            'exec ./linux-wallpaperengine "$@"' > "$stage/usr/bin/linux-wallpaperengine"
+          chmod 755 "$stage/usr/bin/linux-wallpaperengine"
+          deps=(glibc libstdc++ libgcc mesa-libGL mesa-libEGL mesa-libgbm libX11 libXrandr libXi libXcursor libXinerama libXScrnSaver libXtst libwayland-client libwayland-cursor libxkbcommon sdl2-compat mpv-libs ffmpeg-libs glew libcurl pulseaudio-libs alsa-lib gtk3 nss libdrm libnotify at-spi2-core xdg-utils)
+          dep_args=(); for x in "${deps[@]}"; do dep_args+=(--depends "$x"); done
+          fpm -s dir -t rpm -n linux-wallpaperengine -v 0.20260609 \
+            --iteration 1.gita0ddce5 --rpm-dist fc45 --architecture aarch64 \
+            --license GPL-3.0-only --url https://github.com/Almamu/linux-wallpaperengine \
+            --description 'Wallpaper Engine runtime for Linux (aarch64 build)' \
+            "${dep_args[@]}" -C "$stage" \
+            -p engine-linux-wallpaperengine-0.20260609-1.gita0ddce5.fc45.aarch64.rpm usr
+
+      - name: Build steamworks addon (aarch64)
+        run: |
+          curl -fsSL https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init -o rustup-init
+          sh rustup-init -y --profile minimal --default-toolchain stable
+          source "$HOME/.cargo/env"
+          rustup target add aarch64-unknown-linux-gnu
+          sudo apt-get install -y --no-install-recommends \
+            gcc-aarch64-linux-gnu libc6-dev-arm64-cross pkg-config
+          tar -xzf addon/src.tar.gz -C addon
+          tar -xzf addon/steam-sdk-linuxarm64.tar.gz -C addon
+          mkdir -p addon/steam-sdk && mv addon/redistributable_bin addon/steam-sdk/
+          cd addon
+          mkdir -p .cargo
+          printf '%s\n' '[target.aarch64-unknown-linux-gnu]' 'linker = "aarch64-linux-gnu-gcc"' > .cargo/config.toml
+          export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+          export STEAM_SDK_LOCATION="$PWD/steam-sdk"
+          cargo build --release --target aarch64-unknown-linux-gnu
+          cp target/aarch64-unknown-linux-gnu/release/libsteamworksjs.so ../addon-out.so
+
+      - name: Build UI (electron-builder)
+        run: |
+          curl -fsSL https://bun.sh/install | bash -s v1.1.34
+          export PATH="$HOME/.bun/bin:$PATH"
+          # node 22 for packing the addon
+          curl -fsSL https://nodejs.org/dist/v22.20.0/node-v22.20.0-linux-x64.tar.xz | tar -xJ -C /opt
+          export PATH="/opt/node-v22.20.0-linux-x64/bin:$PATH"
+          url='https://github.com/jagrat7/linux-wallpaper-engine/archive/refs/tags/v0.4.15.tar.gz'
+          curl -fsSL "$url" -o gui.tar.gz
+          tar -xzf gui.tar.gz
+          cd linux-wallpaper-engine-0.4.15
+          tar -xzf ../gui/arm64-extra.tar.gz
+          bun install --frozen-lockfile
+          node scripts/app.mjs build
+          mkdir -p node_modules/steamworks.js/dist/linux64
+          cp ../addon-out.so node_modules/steamworks.js/dist/linux64/steamworksjs.linux-arm64-gnu.node
+          tar -xzf ../addon/steam-sdk-linuxarm64.tar.gz -C /tmp
+          cp /tmp/redistributable_bin/linuxarm64/libsteam_api.so node_modules/steamworks.js/dist/linux64/libsteam_api.so
+          tar -xzf ../gui/steamworks-js-overlay.tar.gz -C node_modules/steamworks.js
+          # electron dist (official arm64 zip)
+          curl -fsSL https://github.com/electron/electron/releases/download/v39.7.0/electron-v39.7.0-linux-arm64.zip -o /tmp/electron.zip
+          echo '0154dfe256dbef46abd34257be10cab37cb4b117a144dbbf73d22159fa28abfb  /tmp/electron.zip' | sha256sum -c -
+          # electron-builder can take the official arm64 zip directly
+          sed -i 's#^electronDist: .*#electronDist: /tmp/electron.zip#' electron-builder.arm64.yml
+          ./node_modules/.bin/electron-builder --linux --arm64 \
+            -c electron-builder.arm64.yml --publish never
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p dist
+          cp engine-linux-wallpaperengine-0.20260609-1.gita0ddce5.fc45.aarch64.rpm dist/ 2>/dev/null || true
+          cp engine.zip dist/linux-wallpaperengine-0.20260609-aarch64.zip
+          cp linux-wallpaper-engine-0.4.15/release-arm64/linux-wallpaper-engine-0.4.15-aarch64.rpm dist/
+          cp linux-wallpaper-engine-0.4.15/release-arm64/linux-wallpaper-engine-0.4.15-arm64.zip dist/
+          cd dist && sha256sum * > SHA256SUMS
+          ls -lh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aarch64-release
+          path: dist/*
