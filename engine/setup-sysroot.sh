@@ -26,10 +26,8 @@ dnf5 download --resolve --alldeps --forcearch=aarch64 --releasever=45 \
   --destdir=rpms "${pkgs[@]}"
 
 mkdir -p keys
-curl -fsSLo keys/fedora.key https://fedoraproject.org/fedora/gpg
-for k in keys/fedora.key /usr/share/pki/rpm-gpg/RPM-GPG-KEY-fedora-45-primary; do
-  [[ -f $k ]] && rpmkeys --import "$k" && break
-done
+# key extracted from the locally-verified rpmdb; see fedora-45-primary.asc
+rpmkeys --import fedora-45-primary.asc
 for r in rpms/*.rpm; do
   rpmkeys --checksig "$r" | grep -qv 'signatures NOT OK' || { echo "bad sig: $r"; exit 1; }
 done
