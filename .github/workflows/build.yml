@@ -34,9 +34,13 @@ jobs:
 
       - name: Fedora 45 aarch64 sysroot
         working-directory: engine
-        run: bash setup-sysroot.sh
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # dnf5/rpm only exist on Fedora; run the bootstrap in a fedora:41 container
+          docker run --rm -v "$PWD":/w -w /w fedora:41 bash -c '
+            dnf -y install dnf5 rpm rpm-build cpio curl >/dev/null
+            bash setup-sysroot.sh
+          '
+          sudo chown -R $USER:$USER f45-cross rpms 2>/dev/null || true
 
       - name: Restore CEF archive
         uses: actions/cache@v4
