@@ -15,10 +15,12 @@ pkgs=(
   zlib-ng-compat-devel dbus-devel freeglut-devel freetype-devel fftw-devel
   glew-devel glfw-devel glm-devel lz4-devel mpv-devel ffmpeg-free-devel
   pulseaudio-libs-devel wayland-devel wayland-protocols-devel
+  libX11-devel libXau-devel libxcb-devel libXext-devel libXrender-devel
   libXcursor-devel libXi-devel libXinerama-devel libXrandr-devel
-  libXxf86vm-devel mesa-libGL-devel libglvnd-devel
+  libXxf86vm-devel mesa-libGL-devel libglvnd-devel libglvnd-egl libglvnd-gles
+  libglvnd-opengl mesa-libEGL mesa-dri-drivers mesa-libgbm-devel
   systemd urw-base35-fonts libXau libxcb libX11 libXext libXrender
-  libwayland-server libwayland-cursor libxkbcommon mesa-libEGL mesa-dri-drivers
+  libwayland-server libwayland-cursor libxkbcommon
 )
 mkdir -p rpms
 dnf5 download --resolve --alldeps --forcearch=aarch64 --releasever=45 \
