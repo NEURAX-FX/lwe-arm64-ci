@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
@@ -19,28 +19,13 @@ jobs:
           sudo docker image prune -af || true
           df -h /
 
-      - name: Cache sysroot
-        uses: actions/cache@v4
-        with:
-          path: f45-cross
-          key: f45-cross-v1
-
-      - name: Set up cross toolchain
+      - name: Set up native packaging tools
         run: |
+          test "$(uname -m)" = aarch64
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
-            rpm2cpio cpio rpm zstd zip bzip2
-
-      - name: Fedora 45 aarch64 sysroot
-        run: |
-          # dnf5/rpm only exist on Fedora; run the bootstrap in a fedora container.
-          # Runs at the repo root so toolchain.cmake's f45-cross path resolves.
-          docker run --rm -v "$PWD":/w -w /w fedora:41 bash -c '
-            dnf -y install dnf5 rpm rpm-build cpio curl >/dev/null
-            bash engine/setup-sysroot.sh
-          '
-          sudo chown -R $USER:$USER f45-cross rpms 2>/dev/null || true
+            build-essential pkg-config rpm ruby ruby-dev zip unzip bzip2
+          sudo gem install fpm --version 1.17.0 --no-document
 
       - name: Restore CEF archive
         id: cache-cef
@@ -56,43 +41,53 @@ jobs:
           curl -fL --retry 5 --retry-delay 3 --retry-all-errors -o cef.tar.bz2 "$url"
           echo '3bcb0e3994b4f2db168c314468eb7cc2f3ea0d64  cef.tar.bz2' | sha1sum -c -
 
-      - name: Build engine
-        working-directory: engine
+      - name: Build and smoke-test engine (native Fedora 45 ARM64)
         run: |
-          # Ubuntu's cross-gcc (13) can't parse Fedora 45's libstdc++ 16 headers;
-          # run the build inside fedora:45, which ships the matching cross-gcc 16.
-          docker run --rm -v "$GITHUB_WORKSPACE":/w -w /w/engine fedora:45 bash -c '
-            dnf -y install --setopt=install_weak_deps=False \
-              gcc-aarch64-linux-gnu cmake ninja-build git bzip2 >/dev/null
+          mkdir -p engine
+          docker run --rm -v "$GITHUB_WORKSPACE":/w -w /w/engine fedora:45 bash -euo pipefail -c '
+            test "$(uname -m)" = aarch64
+            dnf -y --disablerepo="*" \
+              --repofrompath=f45,https://mirrors.huaweicloud.com/fedora/releases/45/Everything/aarch64/os/ \
+              --setopt=f45.gpgcheck=1 \
+              --setopt=f45.gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-45-aarch64 \
+              --setopt=install_weak_deps=False install \
+              gcc gcc-c++ cmake ninja-build git bzip2 pkgconf-pkg-config \
+              zlib-ng-compat-devel dbus-devel freeglut-devel freetype-devel \
+              fftw-devel glew-devel glfw-devel glm-devel lz4-devel mpv-devel \
+              ffmpeg-free-devel pulseaudio-libs-devel SDL2-devel gmp-devel mpfr-devel \
+              wayland-devel wayland-protocols-devel libxkbcommon-devel \
+              libX11-devel libXcursor-devel libXi-devel libXinerama-devel \
+              libXrandr-devel libXxf86vm-devel mesa-libGL-devel mesa-libEGL-devel \
+              gtk3 nss alsa-lib libXScrnSaver libXtst
             git clone -q https://github.com/Almamu/linux-wallpaperengine.git lwe
             git -C lwe checkout -q a0ddce586e9ff12e9d31ca6b103f6036cc1b68fe
             git -C lwe submodule update --init --depth 1 --recursive
             cd lwe
             mkdir -p build/cef
-            cp ../cef.tar.bz2 "build/cef/cef_binary_135.0.17+gcbc1c5b+chromium-135.0.7049.52_linuxarm64_minimal.tar.bz2"
+            echo "3bcb0e3994b4f2db168c314468eb7cc2f3ea0d64  /w/cef.tar.bz2" | sha1sum -c -
+            cp /w/cef.tar.bz2 "build/cef/cef_binary_135.0.17+gcbc1c5b+chromium-135.0.7049.52_linuxarm64_minimal.tar.bz2"
             cmake -S . -B build -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
               -DCMAKE_INSTALL_PREFIX=/usr/lib64/linux-wallpaperengine \
-              -DCMAKE_TOOLCHAIN_FILE=/w/toolchain.cmake \
               -DSPIRV_CROSS_SKIP_INSTALL=ON \
-              -DBUILD_TESTING=OFF -DKISSFFT_STATIC=ON \
-              -DLZ4_GOOD_VERSION_EXITCODE=0
-            ninja -C build linux-wallpaperengine qjs_exe qjsc
+              -DBUILD_TESTING=OFF -DKISSFFT_STATIC=ON
+            cmake --build build --parallel 4 --target linux-wallpaperengine qjs_exe qjsc
             DESTDIR=/w/engine/engine-install cmake --install build
+            cd /w/engine/engine-install/usr/lib64/linux-wallpaperengine
+            LD_LIBRARY_PATH="$PWD" ./linux-wallpaperengine --help
           '
+          sudo chown -R "$(id -u):$(id -g)" engine
 
       - name: Strip and package engine
         run: |
           d=engine/engine-install/usr/lib64/linux-wallpaperengine
           find "$d" -type f | while read -r f; do
-            [[ $(head -c4 "$f" | od -An -tx1 | tr -d ' \n') == 7f454c46* ]] && aarch64-linux-gnu-strip --strip-debug "$f" || true
+            if [[ $(head -c4 "$f" | od -An -tx1 | tr -d ' \n') == 7f454c46 ]]; then strip --strip-debug "$f"; fi
           done
           rm -rf "$d"/include "$d"/lib "$d"/share "$d"/bin "$d"/qjs "$d"/qjsc
           chmod 4755 "$d/chrome-sandbox"
           ( cd "$d" && zip -q -r -9 "$GITHUB_WORKSPACE/engine.zip" . )
           # rpm via fpm
-          sudo apt-get install -y --no-install-recommends ruby
-          sudo gem install fpm --no-document
           stage=engine/stage; mkdir -p "$stage/usr/lib64" "$stage/usr/bin"
           cp -a "$d" "$stage/usr/lib64/linux-wallpaperengine"
           printf '%s\n' \
@@ -101,7 +96,7 @@ jobs:
             'export LD_LIBRARY_PATH="/usr/lib64/linux-wallpaperengine${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"' \
             'exec ./linux-wallpaperengine "$@"' > "$stage/usr/bin/linux-wallpaperengine"
           chmod 755 "$stage/usr/bin/linux-wallpaperengine"
-          deps=(glibc libstdc++ libgcc mesa-libGL mesa-libEGL mesa-libgbm libX11 libXrandr libXi libXcursor libXinerama libXScrnSaver libXtst libwayland-client libwayland-cursor libxkbcommon sdl2-compat mpv-libs ffmpeg-libs glew libcurl pulseaudio-libs alsa-lib gtk3 nss libdrm libnotify at-spi2-core xdg-utils)
+          deps=(glibc libstdc++ libgcc mesa-libGL mesa-libEGL mesa-libgbm libX11 libXrandr libXi libXcursor libXinerama libXScrnSaver libXtst libwayland-client libwayland-cursor libxkbcommon sdl2-compat mpv-libs ffmpeg-free glew libcurl pulseaudio-libs alsa-lib gtk3 nss libdrm libnotify at-spi2-core xdg-utils)
           dep_args=(); for x in "${deps[@]}"; do dep_args+=(--depends "$x"); done
           fpm -s dir -t rpm -n linux-wallpaperengine -v 0.20260609 \
             --iteration 1.gita0ddce5 --rpm-dist fc45 --architecture aarch64 \
@@ -110,33 +105,31 @@ jobs:
             "${dep_args[@]}" -C "$stage" \
             -p engine-linux-wallpaperengine-0.20260609-1.gita0ddce5.fc45.aarch64.rpm usr
 
+      - uses: dtolnay/rust-toolchain@stable
+
       - name: Build steamworks addon (aarch64)
         run: |
-          curl -fsSL https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init -o rustup-init
-          sh rustup-init -y --profile minimal --default-toolchain stable
-          source "$HOME/.cargo/env"
-          rustup target add aarch64-unknown-linux-gnu
-          sudo apt-get install -y --no-install-recommends \
-            gcc-aarch64-linux-gnu libc6-dev-arm64-cross pkg-config
           tar -xzf addon/src.tar.gz -C addon
           tar -xzf addon/steam-sdk-linuxarm64.tar.gz -C addon
           mkdir -p addon/steam-sdk && mv addon/redistributable_bin addon/steam-sdk/
           cd addon
-          mkdir -p .cargo
-          printf '%s\n' '[target.aarch64-unknown-linux-gnu]' 'linker = "aarch64-linux-gnu-gcc"' > .cargo/config.toml
-          export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
           export STEAM_SDK_LOCATION="$PWD/steam-sdk"
-          cargo build --release --target aarch64-unknown-linux-gnu
-          cp target/aarch64-unknown-linux-gnu/release/libsteamworksjs.so ../addon-out.so
+          cargo build --locked --release
+          cp target/release/libsteamworksjs.so ../addon-out.so
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.20.0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
 
       - name: Build UI (electron-builder)
+        env:
+          USE_SYSTEM_FPM: 'true'
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
         run: |
-          sudo apt-get install -y --no-install-recommends rpm
-          curl -fsSL https://bun.sh/install | bash -s v1.1.34
-          export PATH="$HOME/.bun/bin:$PATH"
-          # node 22 for packing the addon
-          curl -fsSL https://nodejs.org/dist/v22.20.0/node-v22.20.0-linux-x64.tar.xz | tar -xJ -C /opt
-          export PATH="/opt/node-v22.20.0-linux-x64/bin:$PATH"
           url='https://github.com/jagrat7/linux-wallpaper-engine/archive/refs/tags/v0.4.15.tar.gz'
           curl -fsSL "$url" -o gui.tar.gz
           tar -xzf gui.tar.gz
@@ -153,9 +146,20 @@ jobs:
           curl -fsSL https://github.com/electron/electron/releases/download/v39.7.0/electron-v39.7.0-linux-arm64.zip -o /tmp/electron.zip
           echo '0154dfe256dbef46abd34257be10cab37cb4b117a144dbbf73d22159fa28abfb  /tmp/electron.zip' | sha256sum -c -
           # electron-builder can take the official arm64 zip directly
-          sed -i 's#^electronDist: .*#electronDist: /tmp/electron.zip#' electron-builder.arm64.yml
           ./node_modules/.bin/electron-builder --linux --arm64 \
-            -c electron-builder.arm64.yml --publish never
+            -c electron-builder.arm64.yml -c.electronDist=/tmp/electron.zip --publish never
+
+      - name: Verify ARM64 packages and addon
+        run: |
+          gui=linux-wallpaper-engine-0.4.15/release-arm64/linux-arm64-unpacked
+          addon="$gui/resources/app.asar.unpacked/node_modules/steamworks.js/dist/linux64/steamworksjs.linux-arm64-gnu.node"
+          readelf -h "$gui/linux-wallpaper-engine" | grep 'Machine:.*AArch64'
+          readelf -h "$addon" | grep 'Machine:.*AArch64'
+          node -e 'const a = require(process.argv[1]); console.log("Native ARM64 addon:", Object.keys(a)); if (typeof a.init !== "function" || typeof a.workshop.getAllItems !== "function") process.exit(1)' "$PWD/$addon"
+          for rpm in engine-linux-wallpaperengine-*.rpm linux-wallpaper-engine-0.4.15/release-arm64/*.rpm; do
+            test "$(rpm -qp --qf '%{ARCH}' "$rpm")" = aarch64
+            rpm -qpi "$rpm"
+          done
 
       - name: Collect artifacts
         run: |
