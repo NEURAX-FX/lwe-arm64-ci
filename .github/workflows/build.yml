@@ -113,7 +113,7 @@ jobs:
           tar -xzf addon/src.tar.gz -C addon
           cd addon
           cargo build --locked --release
-          steam_api=$(find target/release/build/steamworks-sys-*/out -type f -name libsteam_api.so -print -quit)
+          steam_api=$(find target -type f -name libsteam_api.so -print -quit)
           test -n "$steam_api"
           cp "$steam_api" ../steam-api.so
           cp target/release/libsteamworksjs.so ../addon-out.so
