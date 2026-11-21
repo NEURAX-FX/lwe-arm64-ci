@@ -33,7 +33,8 @@ dnf5 download --resolve --alldeps --forcearch=aarch64 --releasever=45 \
 
 mkdir -p f45-cross
 for r in rpms/*.rpm; do
-  rpm2cpio "$r" | cpio -idm --quiet --no-absolute-filenames -D f45-cross
+  # cpio can exit early on duplicate files, SIGPIPEing rpm2cpio; tolerate it
+  ( rpm2cpio "$r" | cpio -idm --quiet --no-absolute-filenames -D f45-cross ) || true
 done
 rm -rf f45-cross/etc f45-cross/usr/share/man f45-cross/usr/share/doc
 date -u +%s > f45-cross/.stamp
